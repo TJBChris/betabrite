@@ -1,13 +1,21 @@
-#!/usr/bin/env python3
+#!/home/chris/anaconda3/bin/python3
+
+# doesn't work w/ Anaconda for some reason... !/usr/bin/env python3
 
 import time
-import serial
+import usb.core
+import usb.util
+import re
+import sys
+
+# TJBChris commeted for USB-based BetaBrite PRISM sign.
+#import serial
 
 ################################################################################
 
 #### Frame Control Bytes
 
-WAKEUP = b"\x00\x00\x00\x00\x00\x00";	# Wakes up the sign and
+WAKEUP = b"\x00\x00\x00\x00\x00";	    # Wakes up the sign and
 										#   negotiates communication
 										#   speed
 
@@ -276,6 +284,7 @@ CHARSET_10_NORMAL    = b"\x1a\x36";	# set character set 10 high normal
 CHARSET_FULL_FANCY   = b"\x1a\x38";	# set character set full height fancy
 CHARSET_FULL_NORMAL  = b"\x1a\x39";	# set character set full height normal
 SOM                  = b"\x1b";		# Start Of Mode
+
 TEXT_COLOR_RED       = b"\x1c\x31";	# set text color to red
 TEXT_COLOR_GREEN     = b"\x1c\x32";	# set text color to green
 TEXT_COLOR_AMBER     = b"\x1c\x33";	# set text color to amber
@@ -387,19 +396,60 @@ I_ACCENT             = b"\xbf";		# capital 'i' with accent
 O_TILDE              = b"\xc0";		# capital 'o' with tilde
 o_TILDE              = b"\xc1";		# lowecase 'o' with tilde
 
+# TJBChris - Additional constants
+TEXT_COLOR_BLUE      = b"\x1c\x5a\x30\x30\x30\x30\x46\x46";         # Blue, since Prism signs support it.
+SET_TIME             = b"\x20";     # SPEC_FUNC - Set Time
+SET_DATE             = b"\x3b";     # SPEC_FUNC - Set Date
+SET_DAY              = b"\x26";     # SPEC_FUNC - Set Day of Week
+SET_SEQUENCE         = b"\x2e";     # SPEC_FUNC - Set Message Sequence
+SET_MEM_CONFIG       = b"\x24";     # SPEC_FUNC - Clear/Set Memory Config ($)
+
 ################################################################################
 
-def transmit(port, payload, addr=SIGN_ADDRESS_BROADCAST, type=SIGN_TYPE_ALL_VERIFY):
-    #packet = WAKEUP + SOM  + MODE_ROTATE + TEXT_COLOR_YELLOW + BETA2 + bytes(msg, 'utf-8') + EOT
-    #packet = WAKEUP + SOH + type  + addr + STX + MODE_ROTATE + TEXT_COLOR_YELLOW + BETA2 + bytes(msg, 'utf-8') + EOT
-    #packet = b"\x00\x00\x00\x00\x00\x00\x01!00\x02A0\x1b c" + bytes(msg, 'utf-8') + b"\x04"
+# Next commented to remove port reference.
+#def transmit(port, payload, addr=SIGN_ADDRESS_BROADCAST, type=SIGN_TYPE_ALL_VERIFY):
 
+def transmit(payload, addr=SIGN_ADDRESS_BROADCAST, type=SIGN_TYPE_ALL):
+
+    #print(payload)
     packet = WAKEUP + SOH + type + addr + STX + payload + EOT
-    ser = serial.Serial(port, 9600, timeout=10)
-    ser.write(packet)
-    time.sleep(2)
-    ser.close()
+    
+    # TJBChris commented out - USB follows.
+    #ser = serial.Serial(port, 9600, timeout=10)
+    #ser.write(packet)
+    #time.sleep(2)
+    #ser.close()
 
+    # Find the BetaBrite PRISM
+    dev = usb.core.find(idVendor=0x8765, idProduct=0x1234)
+
+    # was it found?
+    if dev is None:
+        raise ValueError('BetaBrite PRISM device not found.')
+
+    # set the active configuration. With no arguments, the first
+    # configuration will be the active one
+    dev.set_configuration()
+
+    # get an endpoint instance
+    cfg = dev.get_active_configuration()
+    intf = cfg[(0,0)]
+
+    ep = usb.util.find_descriptor(
+        intf,
+        # match the first OUT endpoint
+        custom_match = \
+        lambda e: \
+            usb.util.endpoint_direction(e.bEndpointAddress) == \
+            usb.util.ENDPOINT_OUT)
+
+    assert ep is not None
+
+    # write the data
+    #print(packet)
+    ep.write(packet)
+
+# File priority = label
 def write_file(animations, file=FILE_PRIORITY):
     payload = COMMAND_WRITE_TEXT + file
     for animation in animations:
@@ -407,7 +457,7 @@ def write_file(animations, file=FILE_PRIORITY):
     return payload
 
 def animation(msg, mode=MODE_AUTO, color=TEXT_COLOR_AUTO, position=TEXT_POS_MIDDLE):
-    return SOM + position + mode + color + transcode(msg)
+    return SOM + position + mode + color + transcode(msg)    
 
 def soft_reset():
     return COMMAND_WRITE_SPECIAL + b"\x2c"
@@ -417,145 +467,345 @@ def transcode(msg):
     b = b.replace(b'\xc2\xb0', DEGREES)
     return b
 
+# TJBChris - Configure STRING and TEXT memory areas.
+def config_mem(funcmode, reqdata):
+
+    # The file configs are as follows:
+    # type[label,size_in_bytes], for example s[A,100] for a 100-byte string reservation labeled A, or
+    # t[c,255] for a 255-byte text reservation labeled c.  ** CASE MATTERS IN LABEL NAMES AND TYPE CODES! **
+    # We cannot have values larger than 64K (FFFF).  Additionally, Label 0 is special, so it can't be configured here at all.
+    defFormat = r"^[st]\[[a-zA-Z0-9],[0-9]{1,4}\]$"
+    cfgBytes = None
+    timeBytes = None
+
+    retBytes = COMMAND_WRITE_SPECIAL + SET_MEM_CONFIG
+    
+    for d in reqdata:
+
+        if not re.match(defFormat, d):
+            raise Exception("Message definition must be in the form type[label,size_in_bytes], such as s[A,125].  Type is 's' for string or 't' for text.  Got: " + d)
+
+        mtype = d[0]
+        label = d[2]
+
+        # String Mode
+        if mtype == "s":
+            # Strings: Must be LOCKED, run times 0000, labels "0" and "?"" are not available. 
+            cfgBytes = b"BL"
+            timeBytes = b"0000"
+
+        # Text Mode
+        elif mtype == "t":
+            
+            # Text: Label 0 is not available.  Run times should be 00FF in this implementation (we're not using run times now)
+            cfgBytes = b"AU"
+            timeBytes = b"00FF" # Not using time-based sequences for now; set to all day.
+        else:
+            raise Exception("Invalid config function mode.  Got: " + mtype)
+
+        # If we get an invalid label, bail.
+        if ord(label) < 32 or ord(label) > 126:
+            raise Exception("Invalid label specified.  Valid values are x20 through x7e.  See BetaBrite Alpha Communication Protocol doc for detail.")
+
+        # Label 0 can't be configured for string or text; ? is invalid for strings. 
+        if label == "0" or (mtype == "s" and d[0] == "?"):
+            raise Exception ("File 0 cannot be configured; Strings cannot use 0 or ?.  See BetaBrite Alpha Communication Protocol doc for detail.")
+        
+        msgSizeBytes = int(d[4:len(d)-1])
+        # Strings can't be more than 125 bytes.
+        if mtype == "s" and msgSizeBytes > 125:
+            raise Exception ("String values cannot be larger than 125 bytes.  See BetaBrite Alpha Communication Protocol doc for detail.")
+        
+        msgSize = "%0.4X" % int(d[4:len(d)-1])
+        # Sample: $AAU00FF00FF
+        retBytes += bytes(label,'utf-8') + cfgBytes + bytes(msgSize,'utf-8') + timeBytes
+
+    return retBytes
+
+# TJBChris - parses special functions (date, time, sequence, etc.)
+def parse_function(funcmode, reqdata):
+
+    dateFormat=r"^[0-1][0-9]/[0-3][0-9]/[0-9][0-9]$"
+    timeFormat=r"^[0-2][0-9]:[0-5][0-9]$"
+    seqFormat=r"^[a-zA-Z0-9]{3,130}$"
+    dayFormat=r"^[1-7]$"
+
+    # Validate we have only 1 list item for data...
+    if len(reqdata) != 1:
+        raise Exception("Only one data element is permitted when setting sign functions (sequence, time, date, etc.)")
+
+    if funcmode == "settime":
+        # Validate time format is valid, then set it.
+        if not re.match(timeFormat, reqdata[0]):
+            raise Exception("Time must be in the format HH:MM (using 24-hour time format).")
+        time = str(reqdata[0]).replace(':','')
+
+        return COMMAND_WRITE_SPECIAL + SET_TIME + bytes(time,'utf-8')
+
+    elif funcmode == "setdate":
+        # Validate date format is valid, then set it.
+        if not re.match(dateFormat, reqdata[0]):
+            raise Exception("Date must be in MM/DD/YY format.")
+        date = str(reqdata[0]).replace('/','')
+
+        return COMMAND_WRITE_SPECIAL + SET_DATE + bytes(date,'utf-8')
+    
+    elif funcmode == "setday":
+        # Validate date format is valid, then set it.
+        if not re.match(dayFormat, reqdata[0]):
+            raise Exception("Day of week must be one of a number from 1 to 7 (1=Sunday, 2=Monday, etc.).")
+        day = str(reqdata[0])
+
+        return COMMAND_WRITE_SPECIAL + SET_DAY + bytes(day,'utf-8')
+    
+    elif funcmode == "setsequence":
+        # Validate date format is valid, then set it.
+        if not re.match(seqFormat, reqdata[0]):
+            raise Exception("Sequence must be 3-130 characters, A-Z, a-z, and/or 0-9.  See BetaBrite Alpha protocol manual pg. 23.")
+        seq = str(reqdata[0])
+
+        return COMMAND_WRITE_SPECIAL + SET_SEQUENCE + bytes(seq,'utf-8')
+
+    else:  
+        raise Exception("Invalid 'set' mode specified.  Got: " + funcmode)
+    
+# TJBChris - Parse String Values
+# Strings have limited formatting options/substitutions available.  For now, we're doing text only, w/ room for expansion.
+def write_string(reqdata, label):
+
+    outBytes = COMMAND_WRITE_STRING + bytes(label,'utf-8')
+
+    for d in reqdata:
+        outBytes += bytes(d,'utf-8')
+
+    return outBytes
+
+
 ################################################################################
 
-def parse_cmdline_messages(tokens):
+def parse_text_message(tokens):
     animations = []
     text = ''
     mode = MODE_AUTO
     color = TEXT_COLOR_AUTO
     position = TEXT_POS_MIDDLE
+
+    # Tag regex
+    tagRegex = r"^\[[a-zA-Z0-9]{2,12}\]$"
+
+    # String replacement tag regex ([strd] for string d, [str3] for string 3, etc.)
+    strTagRegex = r"^\[str.\]$"
+
     for tok in tokens:
         if len(tok) == 0:
             continue
 
-        if tok[0] == '+':
-            if text != '':
+        if re.match(tagRegex, tok):
+            if text != '' and not re.match(strTagRegex, tok):
                 animations.append(animation(text, mode, color, position))
                 text = ''
                 mode = MODE_AUTO
                 color = TEXT_COLOR_AUTO
                 position = TEXT_POS_MIDDLE
-            if tok == '+middle':
+
+            # TJBChris - original (though newly-reformatted) tags which manage mode, color, and position are grouped first.
+            # In Adaptive's protocol, these must come before any text or substitutions (time, date, temp., etc.)
+            if tok == '[middle]':
                 position = TEXT_POS_MIDDLE
-            elif tok == '+top':
+            elif tok == '[top]':
                 position = TEXT_POS_TOP
-            elif tok == '+bottom':
+            elif tok == '[bottom]':
                 position = TEXT_POS_BOTTOM
-            elif tok == '+fill':
+            elif tok == '[fill]':
                 position = TEXT_POS_FILL
-            elif tok == '+red':
+            elif tok == '[red]':
                 color = TEXT_COLOR_RED
-            elif tok == '+green':
+            elif tok == '[green]':
                 color = TEXT_COLOR_GREEN
-            elif tok == '+amber':
+            elif tok == '[amber]':
                 color = TEXT_COLOR_AMBER
-            elif tok == '+dimred':
+            elif tok == '[dimred]':
                 color = TEXT_COLOR_DIMRED
-            elif tok == '+brown':
+            elif tok == '[brown]':
                 color = TEXT_COLOR_BROWN
-            elif tok == '+orange':
+            elif tok == '[orange]':
                 color = TEXT_COLOR_ORANGE
-            elif tok == '+yellow':
+            elif tok == '[yellow]':
                 color = TEXT_COLOR_YELLOW
-            elif tok == '+rainbow1':
+            elif tok == '[rainbow1]':
                 color = TEXT_COLOR_RAINBOW1
-            elif tok == '+rainbow2':
+            elif tok == '[rainbow2]':
                 color = TEXT_COLOR_RAINBOW2
-            elif tok == '+mix':
+            elif tok == '[mix]':
                 color = TEXT_COLOR_MIX
-            elif tok == '+autocolor':
+            elif tok == '[autocolor]':
                 color = TEXT_COLOR_AUTO
-            elif tok == '+rotate':
+            elif tok == '[rotate]':
                 mode = MODE_ROTATE
-            elif tok == '+hold':
+            elif tok == '[hold]':
                 mode = MODE_HOLD
-            elif tok == '+flash':
+            elif tok == '[flash]':
                 mode = MODE_FLASH
-            elif tok == '+rollup':
+            elif tok == '[rollup]':
                 mode = MODE_ROLLUP
-            elif tok == '+rolldown':
+            elif tok == '[rolldown]':
                 mode = MODE_ROLLDOWN
-            elif tok == '+rollleft':
+            elif tok == '[rollleft]':
                 mode = MODE_ROLLLEFT
-            elif tok == '+rollright':
+            elif tok == '[rollright]':
                 mode = MODE_ROLLRIGHT
-            elif tok == '+wipeup':
+            elif tok == '[wipeup]':
                 mode = MODE_WIPEUP
-            elif tok == '+wipedown':
+            elif tok == '[wipedown]':
                 mode = MODE_WIPEDOWN
-            elif tok == '+wipeleft':
+            elif tok == '[wipeleft]':
                 mode = MODE_WIPELEFT
-            elif tok == '+wiperight':
+            elif tok == '[wiperight]':
                 mode = MODE_WIPERIGHT
-            elif tok == '+scroll':
-                mode = MODE_SCOLL
-            elif tok == '+automode':
+            elif tok == '[scroll]':
+                mode = MODE_SCROLL
+            elif tok == '[automode]':
                 mode = MODE_AUTO
-            elif tok == '+rollin':
+            elif tok == '[rollin]':
                 mode = MODE_ROLLIN
-            elif tok == '+rollout':
+            elif tok == '[rollout]':
                 mode = MODE_ROLLOUT
-            elif tok == '+wipein':
+            elif tok == '[wipein]':
                 mode = MODE_WIPEIN
-            elif tok == '+wipeout':
+            elif tok == '[wipeout]':
                 mode = MODE_WIPEOUT
-            elif tok == '+cmprsrot':
+            elif tok == '[cmprsrot]':
                 mode = MODE_CMPRSROT
-            elif tok == '+twinkle':
+            elif tok == '[twinkle]':
                 mode = MODE_TWINKLE
-            elif tok == '+sparkle':
+            elif tok == '[sparkle]':
                 mode = MODE_SPARKLE
-            elif tok == '+snow':
+            elif tok == '[snow]':
                 mode = MODE_SNOW
-            elif tok == '+interlock':
+            elif tok == '[interlock]':
                 mode = MODE_INTERLOCK
-            elif tok == '+switch':
+            elif tok == '[switch]':
                 mode = MODE_SWITCH
-            elif tok == '+spray':
+            elif tok == '[spray]':
                 mode = MODE_SPRAY
-            elif tok == '+starburst':
+            elif tok == '[starburst]':
                 mode = MODE_STARBURST
-            elif tok == '+welcome':
+            elif tok == '[welcome]':
                 mode = MODE_WELCOME
-            elif tok == '+slotmachine':
+            elif tok == '[slotmachine]':
                 mode = MODE_SLOTMACHINE
-            elif tok == '+newsflash':
+            elif tok == '[newsflash]':
                 mode = MODE_NEWSFLASH
-            elif tok == '+trumpet':
+            elif tok == '[trumpet]':
                 mode = MODE_TRUMPET
-            elif tok == '+thankyou':
+            elif tok == '[thankyou]':
                 mode = MODE_THANKYOU
-            elif tok == '+nosmoking':
+            elif tok == '[nosmoking]':
                 mode = MODE_NOSMOKING
-            elif tok == '+drinkdrive':
+            elif tok == '[drinkdrive]':
                 mode = MODE_DRINKDRIVE
-            elif tok == '+animal':
+            elif tok == '[animal]':
                 mode = MODE_ANIMAL
-            elif tok == '+fish':
+            elif tok == '[fish]':
                 mode = MODE_FISH
-            elif tok == '+fireworks':
+            elif tok == '[fireworks]':
                 mode = MODE_FIREWORKS
-            elif tok == '+turbocar':
+            elif tok == '[turbocar]':
                 mode = MODE_TURBOCAR
-            elif tok == '+balloons':
+            elif tok == '[balloons]':
                 mode = MODE_BALLOONS
-            elif tok == '+cherrybomb':
+            elif tok == '[cherrybomb]':
                 mode = MODE_CHERRYBOMB
+
+            # TJBChris - Additional color/mode/position tags as they are needed.
+            elif tok == '[blue]':
+                color = TEXT_COLOR_BLUE
+
+            # TJBChris - In-text replacement tags start here (time, date, string substitutions, etc.); the result of these must replace the tag text.
+            elif tok == '[time]':
+                text += CURTIME_INSERT.decode()
+            elif tok == '[usdate]':
+                text += CURDATE_MMDDYY_SLASH.decode()
+            # Insert STRING value.
+            elif re.match(strTagRegex, tok):
+                text += ' ' + STRING_FILE_INSERT.decode() + tok[4]+ ' '
+
         else:
             if len(text) > 0:
                 text += ' '
             text += tok
+
     animations.append(animation(text, mode, color, position))
 
     return animations
+
+# sendRaw - Lets user specify all bytes betweeh STX and EOT.  See BetaBrite Alpha Protocol guide.  For un-implemented features and/or testing.
+def sendRaw(reqdata):
+
+    outBytes = bytes('','utf-8')
+    for d in reqdata:
+        outBytes += bytes(d,'utf-8')
+
+    return outBytes
 
 if __name__ == '__main__':
     import argparse
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("--port", help="Port to write to", default='/dev/cu.usbserial-A4007B5o')
-    parser.add_argument("messages", help="Formatted messages to send", nargs='+')
+    # USB BetaBrite PRISM - Supporting one sign on a system.  All have the same
+    # Vendor ID and Product ID (idVendor=8765, idProduct=1234, bcdDevice= 0.01)
+
+    # This is commented out per the above comment (no need to specify a port...)
+    #parser.add_argument("--port", help="Port to write to", default='/dev/cu.usbserial-A4007B5o')
+
+    # TJBChris - Added label, clear, raw, runseq, and mode args (default is "settext").
+    parser.add_argument("--mode", help="Mode set: text, string, setdate, setday, settime, setsequence, cfgmem.  See doc.", default='text', choices=['text','string','setdate','settime','setsequence','setday','cfgmem'])
+    parser.add_argument("--label", help="Text or string label: Which message or string (A-Z, 0-9) you wish to update.  Default is A.  Message 0 is the priority message and will repeat until --runseq is used.", default='A')
+    parser.add_argument("--raw", help="Allows sending of raw command code and matching data.  Automatically adds packet header/footer.  Requires at least two data parameters.  Ignores mode, label.", action="store_true")
+    parser.add_argument("--runseq", help="Tells the sign to resume running the sequence.  Run this if the sign is stuck displaying the PRIORITY message (label 0).  Ignores all options.  Requires one dummy data element.", action="store_true")
+    parser.add_argument("--clear", help="Clears all messages and strings.  Ignores all other arguments.  A dummy data element is required.", action="store_true")
+
+    parser.add_argument("data", help="The tag-formatted message data or string value to send (settext, setstring) or data supporting a special function.", nargs='+')
     args = parser.parse_args()
-    transmit(args.port, write_file(parse_cmdline_messages(args.messages)))
-    #transmit(args.port, write_file([SOM + TEXT_POS_MIDDLE + MODE_ROTATE + TEXT_COLOR_RED + transcode('red ') + TEXT_COLOR_GREEN + transcode('green ') + TEXT_COLOR_YELLOW + transcode('yellow')]))
+
+    # Following line removed to be replaced with port-less version by TJBChris.
+    #transmit(args.port, write_file(parse_cmdline_messages(args.messages)))
+
+    # Clear the messages and strings.
+    if args.clear == True:
+        transmit(b'E$')
+        print("Memory configuration (strings, text) cleared.")
+        sys.exit()
+
+    # Kill the priority message.
+    if args.runseq == True:
+        transmit(b'\x41\x30')
+        print("Priority message (label 0) cleared.")
+        sys.exit()
+
+    # Raw mode - allow raw data then quit, ignoring any other options.
+    if args.raw == True:
+        if len(args.data) < 1:
+            raise Exception("Raw requires at least one data argument, which includes bytes for: Special Function Label and Special Function Data.  See Alpha Protocol manual section 6.2.")    
+        transmit(sendRaw(args.data))        
+        sys.exit()
+
+    # Set TEXT (See BetaBrite Alpha Protocol manual for the differences between TEXT and STRING)
+    if args.mode == "text":
+        transmit(write_file(parse_text_message(args.data),bytes(args.label,'utf-8')))
+
+    # Set STRING 
+    elif args.mode == "string":
+        transmit(write_string(args.data, args.label))
+
+    # Set* modes (settime, setdate, setsequence, etc.)
+    elif re.match("^set.*",args.mode):
+        transmit(parse_function(args.mode, args.data))
+    
+    # Memory (string, text) config. functions.
+    elif re.match("^cfg.*",args.mode):
+        transmit(config_mem(args.mode, args.data))
+
+    # I need an adult!
+    else:
+        raise Exception("Invalid mode received.  Was an argument added to the parser but not accounted for here?!")
