@@ -92,7 +92,7 @@ Please note that label is optional, but if not specified, the script defaults to
 
 The modes are as follows:
 
-* **text** Updates the text of the label specified by --label (or A if none specified).
+* **text** Updates the text of the label specified by --label (or A if none specified).  This is the default if --mode is not specified.
 * **string** Updates the string contents of the label specified by --label (or A if none specified).
 * **setdate** Sets the sign's date, using the format MM/DD/YY
 * **setday** Sets the sign's day of the week (1=Sunday, 2=Monday, etc.)
