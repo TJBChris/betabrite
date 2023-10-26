@@ -23,10 +23,11 @@ Additionally, I've changed the tagging methodology from +tag to \[tag\] (opening
 # Usage
 
 ## Requirements
-This script requires:
+This script requires the following on Linux (I'm using Ubuntu LTS 22.04).  Please note the commands are for reference; you'll have to find the appropriate packages and USB backend for your implementation.  There are too many permutations of OS distros, drivers, Python releases, and skill levels for me to diagnose any issues you may have.
 
-* Python 3.11 or higher (I used anaconda)
-* pyusb
+* Python 3.11 or higher (I used anaconda, installation instructions are available on Anaconda's site)
+* pyusb - For anaconda, run: ```conda install -c conda-forge pyusb```
+* libusb - For anaconda, run: ```conda install -c conda-forge libusb``` and ```apt install libusb-dev```
 
 ## Overview
 To use the command-line implementation, see the examples below.  Note that for now, a space is required to separate each \[tag\] from neighboring tags or text.  This may change later, but for now it's required.  Please note for BetaBrite signs, you must initialize ALL TEXT and STRING memory and associate their labels before you can send any messages, with the exception of Label 0.  All must be set up at the same time; you can't come back later and "add one".  You must redefine all again.  Once you've initialized your message labels, send up your text, and then set the run sequence.  Please note message labels are case sensitive: "A" is not the same as "a".  
