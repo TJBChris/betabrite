@@ -1,4 +1,4 @@
-#!/home/chris/anaconda3/bin/python3
+#!/opt/anaconda3/bin/python3
 
 # doesn't work w/ Anaconda for some reason... !/usr/bin/env python3
 
@@ -726,6 +726,8 @@ def parse_text_message(tokens):
                 text += CURTIME_INSERT.decode()
             elif tok == '[usdate]':
                 text += CURDATE_MMDDYY_SLASH.decode()
+            elif tok == '[timeday]':
+                text += CURDATE_WEEKDAYY.decode() + ' ' + CURTIME_INSERT.decode()
             # Insert STRING value.
             elif re.match(strTagRegex, tok):
                 text += ' ' + STRING_FILE_INSERT.decode() + tok[4]+ ' '
