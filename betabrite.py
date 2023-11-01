@@ -730,7 +730,7 @@ def parse_text_message(tokens):
                 text += CURDATE_WEEKDAYY.decode() + ' ' + CURTIME_INSERT.decode()
             # Insert STRING value.
             elif re.match(strTagRegex, tok):
-                text += ' ' + STRING_FILE_INSERT.decode() + tok[4]+ ' '
+                text += STRING_FILE_INSERT.decode() + tok[4]
 
         else:
             if len(text) > 0:
