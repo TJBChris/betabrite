@@ -1,12 +1,17 @@
 #!/opt/anaconda3/bin/python3
 
-# doesn't work w/ Anaconda for some reason... !/usr/bin/env python3
+# betabrite.py - A Python-based control program for BetaBrite USB-based PRISM LED sign boards.
+# This is a modified version of jonathankoren/betabrite (on GitHub) to switch from Serial to USB
+# and add extra functionality.  See README.md.
+
+# This script requires Python > 3.12 (it works with 3.11.5).
 
 import time
 import usb.core
 import usb.util
 import re
 import sys
+import usb.backend.libusb1
 
 # TJBChris commeted for USB-based BetaBrite PRISM sign.
 #import serial
@@ -421,7 +426,7 @@ def transmit(payload, addr=SIGN_ADDRESS_BROADCAST, type=SIGN_TYPE_ALL):
     #ser.close()
 
     # Find the BetaBrite PRISM
-    dev = usb.core.find(idVendor=0x8765, idProduct=0x1234)
+    dev = usb.core.find(idVendor=0x8765, idProduct=0x1234,backend=usb.backend.libusb1.get_backend())
 
     # was it found?
     if dev is None:
@@ -447,7 +452,14 @@ def transmit(payload, addr=SIGN_ADDRESS_BROADCAST, type=SIGN_TYPE_ALL):
 
     # write the data
     #print(packet)
-    ep.write(packet)
+    #out = ep.write(packet)
+
+    # The BetaBrite isn't very bright...faster systems tend to overrun the sign and it responds unpredictably.
+    # To slow the process down, we insert a .01 second delay between each byte.  It's a kludge, but it fixes
+    # transmission on faster systems.
+    for i in range(0, len(packet), 1):
+        ep.write(packet[i:i+1])
+        time.sleep(0.001)
 
 # File priority = label
 def write_file(animations, file=FILE_PRIORITY):
