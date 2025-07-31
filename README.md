@@ -25,7 +25,7 @@ Additionally, I've changed the tagging methodology from +tag to \[tag\] (opening
 ## Requirements
 This script requires the following on Linux (I'm using Ubuntu LTS 22.04).  Please note the commands are for reference; you'll have to find the appropriate packages and USB backend for your implementation.  There are too many permutations of OS distros, drivers, Python releases, and skill levels for me to diagnose any issues you may have.
 
-* Python 3.11 or higher (I used anaconda, installation instructions are available on Anaconda's site)
+* Python 3.11.5 (I used anaconda, installation instructions are available on Anaconda's site).  Python 3.12 breaks things.  Maybe I'll fix it someday, maybe not...
 * pyusb - For anaconda, run: ```conda install -c conda-forge pyusb```
 * libusb - For anaconda, run: ```conda install -c conda-forge libusb``` and ```apt install libusb-dev```
 
